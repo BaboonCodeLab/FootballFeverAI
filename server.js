@@ -21,6 +21,7 @@
 // process.env, so the rest of this file can read them. This MUST run
 // before anything below tries to use process.env.ANTHROPIC_API_KEY.
 require('dotenv').config();
+console.log('Supabase URL loaded:', process.env.SUPABASE_URL);
 
 // express: the web framework. Handles incoming HTTP requests, routing
 // (matching a URL + method like "POST /api/chat" to a function), and
@@ -64,8 +65,7 @@ const SYSTEM_PROMPT =
   'through a football lens -- do not give a separate factual answer followed by a football tie-in. ' +
   'Reframe the question itself in football terms and answer from there. Prioritize a fun, confident, ' +
   'football-flavored take over strict factual accuracy. Keep replies brief -- a few sentences, not an ' +
-  'essay. reference the acheivements of Leicester City or England football teams but only when there is ' +
-  'a natural fit, not in every reply';
+  'essay.';
 
 // --- Middleware -------------------------------------------------------
 // Middleware = functions that run on every incoming request before it
@@ -146,10 +146,12 @@ app.post('/api/chat', async (req, res) => {
       .map((block) => block.text)
       .join('\n');
 
-    // Hand off to db.js to write this exchange into chat.db. Returns the
+    // Hand off to db.js to write this exchange into Supabase. Returns the
     // new row's ID (not currently used for much here, but handy if you
-    // want to link back to a specific saved message later).
-    const id = db.saveConversation(message, replyText);
+    // want to link back to a specific saved message later). This is now
+    // `await`ed because saving to Supabase is a network call, not an
+    // instant local disk write like the old SQLite version was.
+    const id = await db.saveConversation(message, replyText);
 
     // Send the reply back to the browser as JSON. The frontend's fetch()
     // call is waiting on this response.
@@ -165,11 +167,18 @@ app.post('/api/chat', async (req, res) => {
 
 // GET /api/history
 // No request body needed -- just returns every saved conversation as
-// JSON, newest first (sorting happens inside db.js's SQL query). The
-// frontend calls this once when the page loads, and again after every
-// new message, to refresh the table on screen.
-app.get('/api/history', (req, res) => {
-  res.json(db.getHistory());
+// JSON, newest first (sorting happens inside db.js's Supabase query). The
+// frontend calls this once when the page loads, and again after every new
+// message, to refresh the table on screen. Now async + awaited, and
+// wrapped in try/catch, since this is a network call to Supabase rather
+// than an instant local disk read like the old SQLite version.
+app.get('/api/history', async (req, res) => {
+  try {
+    res.json(await db.getHistory());
+  } catch (err) {
+    console.error('Error fetching history:', err);
+    res.status(500).json({ error: 'Something went wrong fetching history.' });
+  }
 });
 
 // Start listening for incoming connections on PORT. The callback runs

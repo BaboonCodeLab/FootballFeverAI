@@ -4,100 +4,85 @@
 // This file is the ONLY place in the project that talks directly to the
 // database. Everything else (server.js) just calls the two functions
 // exported at the bottom -- saveConversation() and getHistory() -- without
-// needing to know any SQL. This separation means you could later swap
-// SQLite for Postgres/MySQL by rewriting only this file.
+// needing to know any SQL/Supabase details. This separation is what let us
+// swap the database engine (SQLite -> Postgres via Supabase) by rewriting
+// only this file, with server.js barely changing.
 //
-// We use `node:sqlite`, a database engine built directly into Node.js
-// (available from Node v22.5+). It stores everything in a single file
-// (chat.db) on disk -- no separate database server to install or run,
-// which is why this is a good fit for a small demo.
+// WHY WE MOVED OFF SQLITE:
+// The old version used node:sqlite, which stores everything in a single
+// chat.db FILE on disk. That works great locally, but breaks on serverless
+// hosts like Vercel: every request can run on a fresh, mostly read-only
+// filesystem, so a local file either can't be written to, or silently
+// resets between requests. Supabase gives us a real, persistent Postgres
+// database that lives on Supabase's servers, not on whatever machine
+// happens to run our code -- so it survives serverless's "no persistent
+// disk" model.
 // ============================================================================
 
-// DatabaseSync = the built-in Node module for working with a SQLite
-// database file synchronously (no async/await needed for these calls --
-// they're fast, local disk reads/writes, not network calls).
-const { DatabaseSync } = require('node:sqlite');
+// The official Supabase JS client. Wraps HTTPS calls to your Supabase
+// project into a simple JavaScript client object, similar in spirit to how
+// the Anthropic SDK wraps calls to api.anthropic.com.
+const { createClient } = require('@supabase/supabase-js');
 
-// Node's built-in module for building file paths in a way that works on
-// both Windows (C:\...) and Mac/Linux (/...) without you having to worry
-// about which slash character to use.
-const path = require('path');
+// Fail fast if the required environment variables are missing, same
+// philosophy as the ANTHROPIC_API_KEY check in server.js -- better to
+// crash immediately with a clear message than have every request fail
+// later with a confusing error.
+if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
+  console.error('Missing SUPABASE_URL or SUPABASE_KEY. Check your .env file (see .env.example).');
+  process.exit(1);
+}
 
-// Opens (or creates, if it doesn't exist yet) a file called chat.db in
-// the same folder as this script (__dirname = "this file's own
-// directory"). This single line is the entire "connection" step --
-// there's no separate server to connect to.
-const db = new DatabaseSync(path.join(__dirname, 'chat.db'));
+// Create ONE Supabase client and reuse it for every request, rather than
+// creating a new one per request -- same pattern as the Anthropic client
+// in server.js.
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
-// Runs a raw SQL command immediately (not something we call repeatedly,
-// so no need for a prepared statement here). This creates the table
-// that will hold every chat exchange, but ONLY if it doesn't already
-// exist -- so it's safe to run this every time the server starts without
-// wiping existing data.
-//
-// Columns:
-//   id            - auto-incrementing unique number for each row
-//   user_message  - what the person typed
-//   claude_reply  - what Claude answered
-//   created_at    - timestamp, automatically set to "now" if not provided
-db.exec(`
-  CREATE TABLE IF NOT EXISTS conversations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_message TEXT NOT NULL,
-    claude_reply TEXT NOT NULL,
-    created_at TEXT DEFAULT (datetime('now'))
-  )
-`);
-
-// --- Prepared statements -------------------------------------------------
-// db.prepare() compiles a piece of SQL ONCE, ahead of time, with `?`
-// placeholders standing in for values we'll supply later. We do this
-// once here (outside any function) and reuse the same prepared statement
-// every time someone chats, rather than re-compiling the SQL on every
-// call -- it's both faster and safer.
-//
-// The safety part matters: if we instead built a SQL string by pasting
-// user input directly in (e.g. via string concatenation or template
-// literals), a malicious message could contain SQL code that manipulates
-// or destroys the database -- this is called a SQL injection attack.
-// Using `?` placeholders and passing values separately (see .run() calls
-// below) means the database always treats those values as plain data,
-// never as executable SQL, no matter what the user types.
-
-// Statement for adding one new row.
-const insertConversation = db.prepare(`
-  INSERT INTO conversations (user_message, claude_reply)
-  VALUES (?, ?)
-`);
-
-// Statement for reading every row back out, most recent first.
-const getAllConversations = db.prepare(`
-  SELECT id, user_message, claude_reply, created_at
-  FROM conversations
-  ORDER BY id DESC
-`);
+// NOTE: unlike the old db.js, there's no db.exec(...) here to create the
+// table automatically. Supabase doesn't let app code run arbitrary schema-
+// changing SQL over its normal API for safety reasons -- so the
+// `conversations` table needs to be created ONCE, manually, via the
+// Supabase dashboard's SQL editor. See the migration notes for the exact
+// SQL to run there (it mirrors the old CREATE TABLE statement).
 
 // module.exports defines what other files get when they do
 // require('./db'). We only expose these two functions -- server.js never
-// sees the raw `db` object or writes any SQL itself.
+// sees the raw `supabase` client or writes any SQL itself.
+//
+// IMPORTANT CHANGE FROM THE SQLITE VERSION: both functions are now async
+// and return Promises, because talking to Supabase is a network call
+// (like the Anthropic API call), not an instant local disk read. Callers
+// in server.js need to `await` these now.
 module.exports = {
   // Saves one exchange (the user's message + Claude's reply) as a new
-  // row. .run(...) executes the prepared INSERT statement, substituting
-  // the two arguments here for the two `?` placeholders in order.
-  saveConversation(userMessage, claudeReply) {
-    const result = insertConversation.run(userMessage, claudeReply);
-    // result.lastInsertRowid is the auto-generated `id` of the row we
-    // just created -- handy if a caller wants to reference this exact
-    // saved message later.
-    return result.lastInsertRowid;
+  // row. .insert() sends an INSERT over HTTPS to Supabase. .select() asks
+  // Supabase to hand back the row it just created (including its
+  // auto-generated id), and .single() unwraps that from an array of one
+  // row into a plain object.
+  async saveConversation(userMessage, claudeReply) {
+    const { data, error } = await supabase
+      .from('conversations')
+      .insert({ user_message: userMessage, claude_reply: claudeReply })
+      .select()
+      .single();
+
+    if (error) throw error; // let server.js's existing try/catch handle it
+
+    return data.id;
   },
 
   // Returns every saved conversation as a plain JavaScript array of
   // objects, e.g. [{ id: 3, user_message: '...', claude_reply: '...',
-  // created_at: '...' }, ...]. .all() runs the SELECT and collects every
-  // matching row (as opposed to .get(), which would return just the
-  // first one).
-  getHistory() {
-    return getAllConversations.all();
+  // created_at: '...' }, ...] -- same shape as before, so index.html's
+  // loadHistory() doesn't need any changes at all.
+  async getHistory() {
+    const { data, error } = await supabase
+      .from('conversations')
+      .select('id, user_message, claude_reply, created_at')
+      .order('id', { ascending: false });
+
+    if (error) throw error;
+
+    return data;
   },
 };
