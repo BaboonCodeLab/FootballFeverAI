@@ -1,5 +1,5 @@
 {
-  "name": "claude-db-demo",
+  "name": "footballfeverai",
   "version": "1.0.0",
   "description": "Simple demo: a website that talks to Claude and logs the conversation to a database",
   "main": "server.js",
