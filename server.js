@@ -21,7 +21,6 @@
 // process.env, so the rest of this file can read them. This MUST run
 // before anything below tries to use process.env.ANTHROPIC_API_KEY.
 require('dotenv').config();
-console.log('Supabase URL loaded:', process.env.SUPABASE_URL);
 
 // express: the web framework. Handles incoming HTTP requests, routing
 // (matching a URL + method like "POST /api/chat" to a function), and
@@ -32,7 +31,13 @@ const express = require('express');
 // api.anthropic.com into a simple JavaScript client object.
 const Anthropic = require('@anthropic-ai/sdk');
 
-// Our own module (db.js) that hides all the SQLite/SQL details behind two
+// Node's built-in module for building file paths in a way that works on
+// both Windows (C:\...) and Mac/Linux (/...) without you having to worry
+// about which slash character to use. Used below to reliably locate
+// public/index.html regardless of platform or hosting environment.
+const path = require('path');
+
+// Our own module (db.js) that hides all the Supabase details behind two
 // simple functions: saveConversation() and getHistory().
 const db = require('./db');
 
@@ -65,7 +70,8 @@ const SYSTEM_PROMPT =
   'through a football lens -- do not give a separate factual answer followed by a football tie-in. ' +
   'Reframe the question itself in football terms and answer from there. Prioritize a fun, confident, ' +
   'football-flavored take over strict factual accuracy. Keep replies brief -- a few sentences, not an ' +
-  'essay.';
+  'essay. reference the acheivements of Leicester City or England football teams but only when there is ' +
+  'a natural fit, not in every reply';
 
 // --- Middleware -------------------------------------------------------
 // Middleware = functions that run on every incoming request before it
@@ -77,11 +83,24 @@ const SYSTEM_PROMPT =
 app.use(express.json());
 
 // Serves every file inside the public/ folder automatically, matching the
-// file's path to a URL. Example: public/index.html becomes available at
-// http://localhost:3000/ (Express serves index.html by default at the
-// root). This is how the browser gets your HTML/CSS/JS at all -- there's
-// no separate "build" step, Express just hands the file over as-is.
+// file's path to a URL -- this covers everything EXCEPT the bare "/" path
+// itself when running locally (e.g. any future CSS/JS files added later).
+// This is how the browser gets your HTML/CSS/JS at all -- there's no
+// separate "build" step, Express just hands the file over as-is.
 app.use(express.static('public'));
+
+// GET /
+// Explicitly serves index.html for the homepage. This route exists
+// because Vercel's hosting environment IGNORES express.static() entirely
+// (it expects to serve public/** itself, before requests even reach this
+// Express app) -- so without this explicit route, a request for "/" on
+// Vercel falls through to Express with no matching route, producing a
+// blank "Cannot GET /" error. Defining it here works identically both
+// locally and on Vercel, rather than depending on either platform's
+// automatic static-file behavior.
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
 
 // --- Routes -------------------------------------------------------------
 
