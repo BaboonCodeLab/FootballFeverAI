@@ -106,7 +106,7 @@ directly -- it only ever calls OUR OWN server's /api/chat and
 <body>
 <div class="layout">
   <div>
-    <h1>⚽⚽⚽FootballFever.ai⚽⚽⚽</h1>
+    <h1>⚽⚽⚽Football Fever AI⚽⚽⚽</h1>
     <p class="subtitle">WC 2026 is over, but i can't get it out of my mind!</p>
     <p class="subtitle">(but i lost my memory of the last 6 months)</p>
   </div>
@@ -127,7 +127,253 @@ directly -- it only ever calls OUR OWN server's /api/chat and
        populated (and re-populated) by the loadHistory() function below,
        pulling rows straight from the database via /api/history. -->
   <div class="panel">
-    <h2 style="margin-top:0; font-size:1.1rem;">Saved history (from the database)</h2>
+    <h2 style="margin-top:0; font-size:1.1rem;">Previous questions...</h2>
+    <table id="history-table">
+      <thead>
+        <tr><th>When</th><th>Message</th><th>Reply</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div><!--
+============================================================================
+public/index.html
+----------------------------------------------------------------------------
+This is the frontend: the only file the browser actually loads and runs.
+It has three parts, in the usual order:
+  1. <style> - CSS, purely cosmetic, no logic
+  2. HTML markup - the structure: a form to send messages, a spot to show
+     the reply, and a table to show saved history
+  3. <script> - JavaScript that runs IN THE BROWSER (not on the server).
+     This is what actually talks to server.js via fetch() calls.
+
+Nothing in this file ever touches the Anthropic API key or the database
+directly -- it only ever calls OUR OWN server's /api/chat and
+/api/history endpoints, which is the whole point of having a backend.
+
+DESIGN NOTE: this version moves away from a generic warm-cream palette
+toward a "floodlit pitch" concept -- a mown-grass striped background,
+a condensed scoreboard-style display font, and a chat input that glows
+like it's lit up under stadium floodlights when focused.
+============================================================================
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Football Fever AI</title>
+<!-- Anton: condensed, bold "scoreboard" display face for the headline.
+     Inter: clean body text face. Space Mono: gives timestamps in the
+     history table a match-clock/digital-readout feel. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  /* CSS custom properties (variables) -- defining colors once here means
+     we can reference them everywhere below as var(--name), and change
+     the whole color scheme by editing only these lines.
+     Palette is grounded in an actual floodlit pitch at night: deep grass
+     green, a slightly lighter stripe green (mown-lawn banding), chalk
+     white for panels/lines, and a floodlight yellow used sparingly as
+     the one bright accent. */
+  :root {
+    --pitch-900: #0c3b22;   /* deep grass -- page background base */
+    --pitch-700: #145c33;   /* lighter stripe green -- mown-lawn banding */
+    --chalk: #f4f7f0;       /* panels, chalk touchlines */
+    --flood: #ffcc33;       /* floodlight yellow -- the one accent color */
+    --ink: #0c2016;         /* dark text on light panels */
+    --muted: #5d7768;       /* muted sage-green for secondary text */
+    --line: #d8e2da;        /* hairline borders on chalk panels */
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    color: var(--chalk);
+    margin: 0;
+    padding: 2.5rem 1.5rem;
+    /* The signature background: alternating bands of --pitch-900 and
+       --pitch-700 simulate a real mown football pitch. repeating-linear-
+       gradient draws evenly spaced stripes without needing an image file. */
+    background-color: var(--pitch-900);
+    background-image: repeating-linear-gradient(
+      180deg,
+      var(--pitch-900) 0px,
+      var(--pitch-900) 64px,
+      var(--pitch-700) 64px,
+      var(--pitch-700) 128px
+    );
+    min-height: 100vh;
+  }
+  .layout {
+    max-width: 720px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 1.75rem;
+  }
+
+  /* --- Header ------------------------------------------------------- */
+  .masthead { text-align: center; }
+  h1 {
+    font-family: 'Anton', sans-serif;
+    font-weight: 400; /* Anton is already a single bold weight */
+    font-size: clamp(2.2rem, 6vw, 3.2rem);
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    margin: 0 0 0.4rem;
+    color: var(--chalk);
+    text-shadow: 0 2px 0 rgba(0,0,0,0.25);
+  }
+  /* The floodlight-yellow underline beneath the title -- a stand-in for
+     a touchline, drawn as a short, deliberate rule rather than a full-
+     width line so it reads as a mark, not a divider. */
+  h1::after {
+    content: '';
+    display: block;
+    width: 72px;
+    height: 4px;
+    background: var(--flood);
+    margin: 0.6rem auto 0;
+    border-radius: 2px;
+  }
+  p.subtitle {
+    color: var(--chalk);
+    opacity: 0.75;
+    margin: 0.15rem 0;
+    font-size: 0.95rem;
+  }
+
+  /* --- Panels --------------------------------------------------------
+     .panel = the chalk-white card wrapping the history table. The chat
+     input gets its own distinct treatment below (.field-wrap) so it can
+     stand apart as the page's focal point rather than living inside a
+     plain card like everything else. */
+  .panel {
+    background: var(--chalk);
+    border-radius: 14px;
+    padding: 1.4rem;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+  }
+  .panel h2 {
+    margin: 0 0 0.9rem;
+    font-size: 0.8rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 700;
+  }
+
+  /* --- The floodlit input: this is the page's signature element ------
+     A dark surround (like the shadowed tunnel around a floodlit pitch)
+     holds the input + button. On focus-within, a yellow glow blooms
+     around the whole bar, as if a floodlight just switched on -- making
+     it unmistakably the thing you're meant to interact with. */
+  .field-wrap {
+    background: #08201530;
+    background: rgba(8, 32, 21, 0.35);
+    border: 1px solid rgba(255, 204, 51, 0.25);
+    border-radius: 16px;
+    padding: 0.6rem;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+    transition: box-shadow 0.25s ease, border-color 0.25s ease;
+  }
+  .field-wrap:focus-within {
+    border-color: var(--flood);
+    box-shadow:
+      0 0 0 3px rgba(255, 204, 51, 0.25),
+      0 0 28px 4px rgba(255, 204, 51, 0.45),
+      0 8px 24px rgba(0,0,0,0.3);
+  }
+  #chat-form { display: flex; gap: 0.6rem; }
+  #message {
+    flex: 1;
+    padding: 0.85rem 1rem;
+    border: none;
+    border-radius: 10px;
+    font-size: 1.05rem;
+    font-family: 'Inter', sans-serif;
+    background: var(--chalk);
+    color: var(--ink);
+  }
+  #message:focus { outline: none; }
+  #message::placeholder { color: var(--muted); }
+  button {
+    background: var(--flood);
+    color: var(--ink);
+    border: none;
+    border-radius: 10px;
+    padding: 0.85rem 1.4rem;
+    font-size: 1rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    transition: transform 0.12s ease, background 0.12s ease;
+  }
+  button:hover:not(:disabled) { transform: translateY(-1px); background: #ffd966; }
+  button:disabled { opacity: 0.6; cursor: default; transform: none; }
+
+  #reply {
+    margin-top: 1.1rem;
+    white-space: pre-wrap; /* preserves line breaks Claude includes in its reply */
+    line-height: 1.6;
+    color: var(--ink);
+    font-size: 1rem;
+  }
+
+  /* --- History table: styled like a match report / scoreboard log,
+     with monospace timestamps for a digital-readout feel. */
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  th, td { text-align: left; padding: 0.6rem 0.4rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th {
+    color: var(--muted);
+    font-weight: 700;
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  td { color: var(--ink); }
+  tbody tr:hover { background: #f0f5ee; }
+  .timestamp {
+    color: var(--muted);
+    white-space: nowrap;
+    font-family: 'Space Mono', monospace;
+    font-size: 0.8rem;
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+  <div class="masthead">
+    <h1>Football Fever AI</h1>
+    <p class="subtitle">WC 2026 is over, but i can't get it out of my mind!</p>
+    <p class="subtitle">(but i lost my memory of the last 6 months)</p>
+  </div>
+
+  <!-- The chat panel: the floodlit input bar is the focal point, sitting
+       directly on the pitch background rather than inside a chalk card,
+       so it reads as the one thing under the lights. Claude's reply then
+       appears in a chalk card beneath it once a message is sent. -->
+  <div>
+    <div class="field-wrap">
+      <form id="chat-form">
+        <input type="text" id="message" placeholder="Ask me anything..." autocomplete="off" required />
+        <button type="submit" id="send-btn">Send</button>
+      </form>
+    </div>
+    <!-- Empty on page load; filled in with Claude's reply by JavaScript
+         after a successful request. Sits inside its own chalk panel once
+         populated so the answer reads clearly against the pitch stripes. -->
+    <div class="panel" id="reply-panel" style="margin-top: 1rem; display: none;">
+      <div id="reply"></div>
+    </div>
+  </div>
+
+  <!-- The history panel: a table whose <tbody> starts empty and gets
+       populated (and re-populated) by the loadHistory() function below,
+       pulling rows straight from the database via /api/history. -->
+  <div class="panel">
+    <h2>Match log &mdash; previous questions</h2>
     <table id="history-table">
       <thead>
         <tr><th>When</th><th>Message</th><th>Reply</th></tr>
@@ -136,6 +382,151 @@ directly -- it only ever calls OUR OWN server's /api/chat and
     </table>
   </div>
 </div>
+
+<script>
+  // ---------------------------------------------------------------------
+  // Grab references to the DOM elements we'll need to read from or write
+  // to. Doing this once at the top (rather than re-querying every time)
+  // is both faster and keeps the code below easier to read.
+  // ---------------------------------------------------------------------
+  const form = document.getElementById('chat-form');
+  const input = document.getElementById('message');
+  const sendBtn = document.getElementById('send-btn');
+  const replyEl = document.getElementById('reply');
+  const replyPanel = document.getElementById('reply-panel');
+  const historyBody = document.querySelector('#history-table tbody');
+
+  // Asks OUR OWN server (not Claude directly) for every saved
+  // conversation, then rebuilds the table rows from scratch each time.
+  // `async` because fetch() is asynchronous -- it takes time to get a
+  // response back over the network, and `await` pauses this function
+  // (without freezing the whole page) until the response arrives.
+  async function loadHistory() {
+    const res = await fetch('/api/history'); // GET request to server.js
+    const rows = await res.json(); // parse the JSON response body into a JS array
+
+    // .map() turns each row object into an HTML string for one <tr>,
+    // then .join('') glues all those strings together into one big
+    // block of HTML, which we then drop into the table body in one go.
+    historyBody.innerHTML = rows.map(r => `
+      <tr>
+        <td class="timestamp">${r.created_at}</td>
+        <td>${escapeHtml(r.user_message)}</td>
+        <td>${escapeHtml(r.claude_reply)}</td>
+      </tr>
+    `).join('');
+  }
+
+  // Safety helper: converts any HTML-special characters in `str` (like <
+  // and >) into their "escaped" text equivalents, so that if someone
+  // typed something like script...script as their message, it shows
+  // up as harmless visible text in the table instead of being executed
+  // as real HTML/JavaScript on the page. This kind of attack is called
+  // XSS (Cross-Site Scripting), and escaping any user-supplied text
+  // before inserting it into the page is the standard defense.
+  //
+  // The trick here: we create an invisible <div>, set its textContent
+  // (which the browser always treats as plain text, never as markup),
+  // then read back its innerHTML -- which gives us the safely-escaped
+  // version of the same text.
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  // If a reply runs long, we break it up with a "hydrating" pause line
+  // before the next sentence -- purely a display effect, the underlying
+  // text from Claude is untouched. Splits on '.', '!', or '?' followed by
+  // whitespace, so "Mr. Smith" won't false-split, but normal sentence
+  // endings will.
+  function formatReply(text) {
+    const words = text.trim().split(/\s+/).filter(Boolean);
+    if (words.length <= 40) return text; // short reply: leave as-is
+
+    const sentences = text.match(/[^.!?]+[.!?]*(\s+|$)/g) || [text];
+    let wordCount = 0;
+    let output = '';
+    let inserted = false;
+
+    for (const sentence of sentences) {
+      const sentenceWords = sentence.trim().split(/\s+/).filter(Boolean).length;
+      if (!inserted && wordCount > 50) {
+        output += '\n\nPlease wait............ hydrating..........\n\n';
+        inserted = true;
+      }
+      output += sentence;
+      wordCount += sentenceWords;
+    }
+    return output;
+  }
+
+  // Runs whenever the form is submitted -- either by clicking "Send" or
+  // by pressing Enter while the input is focused (both trigger a normal
+  // HTML form "submit" event).
+  form.addEventListener('submit', async (e) => {
+    // By default, submitting a form makes the browser reload the page
+    // and navigate somewhere -- we don't want that here, since we're
+    // handling everything with JavaScript instead. This line stops that
+    // default behavior.
+    e.preventDefault();
+
+    const message = input.value.trim();
+    if (!message) return; // ignore empty/whitespace-only submissions
+
+    // Give the user feedback that something is happening: disable the
+    // button (prevents double-submitting while waiting) and change its
+    // label. Also clear out any previous reply text.
+    sendBtn.disabled = true;
+    sendBtn.textContent = 'Thinking...';
+    replyEl.textContent = '';
+
+    try {
+      // Send the message to OUR server's /api/chat endpoint as a POST
+      // request with a JSON body. This is NOT a call to Claude directly
+      // -- server.js is the one that talks to Claude, using the API key
+      // that only it (never the browser) has access to.
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message }), // JS object -> JSON text
+      });
+      const data = await res.json();
+
+      // If the server responded with an { error: ... } object (e.g. bad
+      // input, or Claude API failure), throw so the catch block below
+      // handles showing it to the user.
+      if (data.error) throw new Error(data.error);
+
+      // Show Claude's reply (with the hydrating pause inserted if it's
+      // long), clear the input for the next message, and refresh the
+      // history table so the new exchange appears in it immediately
+      // (rather than only showing up next time the page is reloaded).
+      replyPanel.style.display = 'block';
+      replyEl.textContent = formatReply(data.reply);
+      input.value = '';
+      await loadHistory();
+    } catch (err) {
+      // Covers both network failures (server unreachable) and the
+      // "thrown" error above from data.error.
+      replyPanel.style.display = 'block';
+      replyEl.textContent = 'Error: ' + err.message;
+    } finally {
+      // finally always runs, whether the try succeeded or failed --
+      // makes sure the button is always re-enabled and reset, so the
+      // user never gets stuck unable to send another message.
+      sendBtn.disabled = false;
+      sendBtn.textContent = 'Send';
+    }
+  });
+
+  // Populate the history table once, immediately when the page first
+  // loads (so you see past conversations right away, not just after
+  // sending a new message).
+  loadHistory();
+</script>
+</body>
+</html>
 
 <script>
   // ---------------------------------------------------------------------
