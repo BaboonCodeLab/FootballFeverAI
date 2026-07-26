@@ -73,6 +73,15 @@ const SYSTEM_PROMPT =
   'essay. reference the acheivements of Leicester City or England football teams but only when there is ' +
   'a natural fit, not in every reply';
 
+// Uppercases every whole-word occurrence of "football" in a string, so
+// "football" and "Football" both become "FOOTBALL" -- but "footballer"
+// or "footballing" are left alone, since \b (word boundary) only matches
+// where "football" ends a whole word. Used below whenever the user's own
+// message mentions "soccer".
+function shoutFootball(text) {
+  return text.replace(/\bfootball\b/gi, 'FOOTBALL');
+}
+
 // --- Middleware -------------------------------------------------------
 // Middleware = functions that run on every incoming request before it
 // reaches your route handlers below.
@@ -160,10 +169,19 @@ app.post('/api/chat', async (req, res) => {
     // or in more advanced setups, tool-use blocks). Since we're doing a
     // simple text chat, we filter down to just the text blocks and glue
     // their text together with newlines in case there's more than one.
-    const replyText = response.content
+    let replyText = response.content
       .filter((block) => block.type === 'text')
       .map((block) => block.text)
       .join('\n');
+
+    // If the user said "soccer" anywhere in their message, shout every
+    // occurrence of "football" in the reply as "FOOTBALL". This is a
+    // simple post-processing step, applied to whatever Claude already
+    // wrote -- it doesn't change what's sent to Claude or the system
+    // prompt itself.
+    if (/soccer/i.test(message)) {
+      replyText = shoutFootball(replyText);
+    }
 
     // Hand off to db.js to write this exchange into Supabase. Returns the
     // new row's ID (not currently used for much here, but handy if you
